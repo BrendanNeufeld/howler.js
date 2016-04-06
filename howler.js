@@ -57,6 +57,8 @@
     this._howls = [];
     this._codecs = codecs;
     this.iOSAutoEnable = true;
+    this.desiredSampleRate = 44100;
+    this._sampleRateUpdated = false;
   };
   HowlerGlobal.prototype = {
     /**
@@ -162,11 +164,77 @@
 
       self._iOSEnabled = false;
 
+      var getAudioContext = function(desiredSampleRate, context) {
+        var AudioCtor = window.AudioContext || window.webkitAudioContext
+
+        desiredSampleRate = typeof desiredSampleRate === 'number'
+          ? desiredSampleRate
+          : 44100
+
+        context = context || new AudioCtor();
+
+        // Check if hack is necessary. Only occurs in iOS6+ devices
+        // and only when you first boot the iPhone, or play a audio/video
+        // with a different sample rate
+
+        if (/(iPhone|iPad)/i.test(navigator.userAgent) &&
+          context.sampleRate !== desiredSampleRate &&
+          !self._sampleRateUpdated) {
+
+          self._sampleRateUpdated = true;
+
+          var buffer = context.createBuffer(1, 1, desiredSampleRate)
+          var dummy = context.createBufferSource()
+          dummy.buffer = buffer
+          dummy.connect(context.destination)
+          dummy.start(0)
+          dummy.disconnect()
+
+          context.close() // dispose old context
+          context = new AudioCtor()
+
+          masterGain = (typeof context.createGain === 'undefined') ? context.createGainNode() : context.createGain();
+          masterGain.gain.value = 1;
+          masterGain.connect(context.destination);
+
+          Howler.ctx = context;
+          ctx = context;
+
+          self._howls.forEach(function(howl){
+            var audioNode = howl._audioNode[howl._audioNode.length-1];
+            if(!audioNode.paused){
+              howl.on('load', function() {
+                howl._loaded = true;
+                howl.volume(howl._volume);
+                howl.play();
+              });
+            }
+            howl.stop();
+
+            //var audioNode = howl._audioNode
+            howl._audioNode.forEach(function(node){
+              node.disconnect();
+              node = null;
+            })
+
+
+            howl._loaded = false;
+            // howl._setupAudioNode();
+            howl._audioNode = [];
+            howl._setupAudioNode();
+            howl.load();
+          })
+
+        }
+        return context
+      }
+
       // call this method on touch start to create and play a buffer,
       // then check if the audio actually played to determine if
       // audio has now been unlocked on iOS
       var unlock = function() {
         // create an empty buffer
+        ctx = getAudioContext(44100, ctx);
         var buffer = ctx.createBuffer(1, 1, 22050);
         var source = ctx.createBufferSource();
         source.buffer = buffer;
@@ -268,8 +336,12 @@
     // add this to an array of Howl's to allow global control
     Howler._howls.push(self);
 
+    self.options = o;
+
     // load the track
     self.load();
+
+
   };
 
   // setup all of the methods
@@ -984,7 +1056,6 @@
     _inactiveNode: function(callback) {
       var self = this,
         node = null;
-
       // find first inactive node to recycle
       for (var i=0; i<self._audioNode.length; i++) {
         if (self._audioNode[i].paused && self._audioNode[i].readyState === 4) {
@@ -1214,7 +1285,7 @@
         loadSound(obj);
         return;
       }
-      
+
       if (/^data:[^;]+;base64,/.test(url)) {
         // Decode base64 data-URIs because some browsers cannot load data-URIs with XMLHttpRequest.
         var data = atob(url.split(',')[1]);
@@ -1222,7 +1293,7 @@
         for (var i=0; i<data.length; ++i) {
           dataView[i] = data.charCodeAt(i);
         }
-        
+
         decodeAudioData(dataView.buffer, obj, url);
       } else {
         // load the buffer from the URL
